@@ -1,0 +1,16 @@
+{
+  "engine": "llama.cpp",
+  "model_name": "gemma-4-12B-it-Q4_0.gguf",
+  "batch_size": 1,
+  "prompt_tokens": 99,
+  "tokens_generated": 512,
+  "time_seconds": 6.85,
+  "tokens_per_sec": 74.6,
+  "prompt_tps": 466.6,
+  "decode_tps": 74.6,
+  "model_size_bytes": 7219673216,
+  "calculated_bandwidth_gbps": 538.6,
+  "gpu_theoretical_max_gbps": 896.0,
+  "bandwidth_efficiency_pct": 60.1,
+  "criteria_passed": false
+}

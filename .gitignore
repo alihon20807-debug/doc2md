@@ -1,0 +1,23 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Project-local runtime artifacts
+sample_docs/*
+!sample_docs/.gitkeep
+out/
+*.gguf
+llama.cpp-bin/
+vendor/unilm-sparse*/
+vendor/installers/
+models/
+*.pth
+*.log
+

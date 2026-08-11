@@ -1,0 +1,43 @@
+[project]
+name = "doc2md"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = "==3.12.*"
+dependencies = [
+    "mineru[core]>=3.4.4",
+    "pillow>=12.3.0",
+    "pymupdf>=1.28.2",
+    "requests>=2.34.2",
+    "tqdm>=4.70.0",
+    "typer>=0.26.8",
+    "torch",
+    "torchvision",
+    "docling-ibm-models>=3.13.3",
+    "hf-xet>=1.6.0",
+    "timm>=1.0.28",
+    "scipy>=1.18.0",
+    "markitdown[docx,html,pdf,pptx,xlsx]>=0.1.7",
+    "pymupdf4llm>=1.28.2",
+    "paddleocr>=3.7.0",
+    "paddlepaddle>=3.3.1",
+    "doclayout-yolo>=0.0.4",
+    "tiktoken>=0.13.0",
+    "verovio>=6.2.1",
+]
+
+[project.scripts]
+doc2md = "doc2md.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true

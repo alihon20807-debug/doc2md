@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import os
 
-from doc2md.classify import PP_DOCLAYOUT_LABEL_TO_BUCKET, bucket_for_label
+from doc2md.classify import PP_DOCLAYOUT_LABEL_TO_BUCKET
 from doc2md.config import Settings
-from doc2md.layout_engines.base import LayoutEngine
-from doc2md.models import Bucket, PageImage, Region
+from doc2md.layout_engines.base import LayoutEngine, make_region, safe_detect
+from doc2md.models import PageImage, Region
 
 
 class MinerULayoutEngine(LayoutEngine):
@@ -44,26 +44,27 @@ class MinerULayoutEngine(LayoutEngine):
         return self._model
 
     def detect(self, page: PageImage) -> list[Region]:
-        model = self._load()
-        predictions = model.predict(page.image)
+        def _run() -> list[Region]:
+            model = self._load()
+            predictions = model.predict(page.image)
 
-        regions: list[Region] = []
-        for pred in predictions:
-            bucket = bucket_for_label(pred["label"], PP_DOCLAYOUT_LABEL_TO_BUCKET, self._settings.skip_labels)
-            if bucket is Bucket.SKIP:
-                continue
-            xmin, ymin, xmax, ymax = pred["bbox"]
-            regions.append(
-                Region(
-                    page_no=page.page_no,
-                    label=pred["label"],
-                    bucket=bucket,
-                    bbox=(int(xmin), int(ymin), int(xmax), int(ymax)),
-                    score=float(pred["score"]),
+            regions: list[Region] = []
+            for pred in predictions:
+                xmin, ymin, xmax, ymax = pred["bbox"]
+                region = make_region(
+                    page.page_no,
+                    pred["label"],
+                    PP_DOCLAYOUT_LABEL_TO_BUCKET,
+                    self._settings.skip_labels,
+                    (int(xmin), int(ymin), int(xmax), int(ymax)),
+                    float(pred["score"]),
                     order_index=int(pred["index"]),
                 )
-            )
-        # predictions are already reading-order-sorted by the model, but the
-        # skip filter above can only remove entries, not reorder them.
-        regions.sort(key=lambda r: r.order_index)
-        return regions
+                if region is not None:
+                    regions.append(region)
+            # predictions are already reading-order-sorted by the model, but the
+            # skip filter above can only remove entries, not reorder them.
+            regions.sort(key=lambda r: r.order_index)
+            return regions
+
+        return safe_detect("mineru", page, self._settings, PP_DOCLAYOUT_LABEL_TO_BUCKET, _run)

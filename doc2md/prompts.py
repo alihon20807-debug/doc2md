@@ -8,8 +8,27 @@ SYSTEM_PROMPT = (
     "content for that region - no preamble, no explanations, no surrounding commentary."
 )
 
-TITLE_LABELS = {"doc_title", "paragraph_title"}
-FORMULA_LABELS = {"display_formula", "inline_formula", "formula_number"}
+# Title/formula label spellings across ALL layout engines, not just MinerU's
+# native vocabulary - text_prompt() below is called generically for every
+# engine's TEXT_LIKE regions (pipeline.py), so each engine's own label
+# spelling for "this is a title" / "this is a formula" needs to be listed
+# here or that engine's titles/formulas silently fall back to the generic
+# body-text prompt (no Markdown heading, no LaTeX).
+TITLE_LABELS = {
+    "doc_title",       # mineru / paddleocr / pymupdf4llm
+    "paragraph_title",  # mineru
+    "Title",           # docling / markitdown
+    "Section-header",  # docling / markitdown
+    "title",           # doclayout_yolo
+}
+FORMULA_LABELS = {
+    "display_formula",  # mineru / paddleocr
+    "inline_formula",   # mineru
+    "formula_number",   # mineru
+    "Formula",          # docling
+    "isolate_formula",  # doclayout_yolo
+    "formula",          # doclayout_yolo
+}
 
 NOT_DIAGRAM_SENTINEL = "NOT_DIAGRAM"
 

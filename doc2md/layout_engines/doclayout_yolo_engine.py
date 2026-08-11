@@ -9,12 +9,10 @@ from __future__ import annotations
 
 import numpy as np
 
-from doc2md.classify import DOCLAYOUT_YOLO_LABEL_TO_BUCKET, bucket_for_label
+from doc2md.classify import DOCLAYOUT_YOLO_LABEL_TO_BUCKET
 from doc2md.config import Settings
-from doc2md.layout_engines.base import LayoutEngine
-from doc2md.layout_engines.dedup import suppress_contained_duplicates
-from doc2md.layout_engines.reading_order import assign_reading_order
-from doc2md.models import Bucket, PageImage, Region
+from doc2md.layout_engines.base import LayoutEngine, finalize_regions, make_region, safe_detect
+from doc2md.models import PageImage, Region
 
 
 class DocLayoutYOLOEngine(LayoutEngine):
@@ -37,30 +35,29 @@ class DocLayoutYOLOEngine(LayoutEngine):
         return self._model
 
     def detect(self, page: PageImage) -> list[Region]:
-        model = self._load()
-        img_np = np.array(page.image)
+        def _run() -> list[Region]:
+            model = self._load()
+            img_np = np.array(page.image)
 
-        results = model.predict(img_np, imgsz=1024, conf=self._settings.layout_confidence, verbose=False)
+            results = model.predict(img_np, imgsz=1024, conf=self._settings.layout_confidence, verbose=False)
 
-        regions: list[Region] = []
-        if results and len(results) > 0 and results[0].boxes is not None:
-            for box in results[0].boxes:
-                cls_id = int(box.cls[0])
-                score = float(box.conf[0])
-                label = model.names[cls_id] if 0 <= cls_id < len(model.names) else str(cls_id)
-                bucket = bucket_for_label(label, DOCLAYOUT_YOLO_LABEL_TO_BUCKET, self._settings.skip_labels)
-                if bucket is Bucket.SKIP:
-                    continue
-                xmin, ymin, xmax, ymax = box.xyxy[0].tolist()
-                regions.append(
-                    Region(
-                        page_no=page.page_no,
-                        label=label,
-                        bucket=bucket,
-                        bbox=(int(xmin), int(ymin), int(xmax), int(ymax)),
-                        score=score,
-                        order_index=0,
+            regions: list[Region] = []
+            if results and len(results) > 0 and results[0].boxes is not None:
+                for box in results[0].boxes:
+                    cls_id = int(box.cls[0])
+                    label = model.names[cls_id] if 0 <= cls_id < len(model.names) else str(cls_id)
+                    xmin, ymin, xmax, ymax = box.xyxy[0].tolist()
+                    region = make_region(
+                        page.page_no,
+                        label,
+                        DOCLAYOUT_YOLO_LABEL_TO_BUCKET,
+                        self._settings.skip_labels,
+                        (int(xmin), int(ymin), int(xmax), int(ymax)),
+                        float(box.conf[0]),
                     )
-                )
+                    if region is not None:
+                        regions.append(region)
 
-        return assign_reading_order(suppress_contained_duplicates(regions))
+            return finalize_regions(regions, self._settings)
+
+        return safe_detect("doclayout_yolo", page, self._settings, DOCLAYOUT_YOLO_LABEL_TO_BUCKET, _run)

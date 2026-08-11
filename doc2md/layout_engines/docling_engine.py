@@ -13,12 +13,10 @@ It has no built-in reading-order head, so a heuristic sort
 
 from __future__ import annotations
 
-from doc2md.classify import DOCLING_LABEL_TO_BUCKET, bucket_for_label
+from doc2md.classify import DOCLING_LABEL_TO_BUCKET
 from doc2md.config import Settings
-from doc2md.layout_engines.base import LayoutEngine
-from doc2md.layout_engines.dedup import suppress_contained_duplicates
-from doc2md.layout_engines.reading_order import assign_reading_order
-from doc2md.models import Bucket, PageImage, Region
+from doc2md.layout_engines.base import LayoutEngine, finalize_regions, make_region, safe_detect
+from doc2md.models import PageImage, Region
 
 DOCLING_LAYOUT_REPO_ID = "docling-project/docling-layout-heron"
 DOCLING_LAYOUT_REVISION = "main"
@@ -57,22 +55,22 @@ class DoclingLayoutEngine(LayoutEngine):
         return self._predictor
 
     def detect(self, page: PageImage) -> list[Region]:
-        predictor = self._load()
-        predictions = predictor.predict(page.image)
+        def _run() -> list[Region]:
+            predictor = self._load()
+            predictions = predictor.predict(page.image)
 
-        regions: list[Region] = []
-        for pred in predictions:
-            bucket = bucket_for_label(pred["label"], DOCLING_LABEL_TO_BUCKET, self._settings.skip_labels)
-            if bucket is Bucket.SKIP:
-                continue
-            regions.append(
-                Region(
-                    page_no=page.page_no,
-                    label=pred["label"],
-                    bucket=bucket,
-                    bbox=(int(pred["l"]), int(pred["t"]), int(pred["r"]), int(pred["b"])),
-                    score=float(pred["confidence"]),
-                    order_index=0,  # assigned by assign_reading_order below
+            regions: list[Region] = []
+            for pred in predictions:
+                region = make_region(
+                    page.page_no,
+                    pred["label"],
+                    DOCLING_LABEL_TO_BUCKET,
+                    self._settings.skip_labels,
+                    (int(pred["l"]), int(pred["t"]), int(pred["r"]), int(pred["b"])),
+                    float(pred["confidence"]),
                 )
-            )
-        return assign_reading_order(suppress_contained_duplicates(regions))
+                if region is not None:
+                    regions.append(region)
+            return finalize_regions(regions, self._settings)
+
+        return safe_detect("docling", page, self._settings, DOCLING_LABEL_TO_BUCKET, _run)

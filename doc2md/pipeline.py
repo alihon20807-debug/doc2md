@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -15,7 +16,8 @@ from doc2md.crop import crop_region, save_region_crop
 from doc2md.layout_engines import get_layout_engine
 from doc2md.markdown_builder import build_markdown
 from doc2md.models import Bucket, DocumentResult, PageImage, Region, RegionResult
-from doc2md.prompts import NOT_DIAGRAM_SENTINEL, PICTURE_PROMPT, TABLE_PROMPT, text_prompt
+from doc2md.ocr_engines import OCREngine, get_ocr_engine
+from doc2md.prompts import FORMULA_LABELS, NOT_DIAGRAM_SENTINEL, PICTURE_PROMPT, TABLE_PROMPT, TITLE_LABELS, text_prompt
 from doc2md.render import render_input_async
 from doc2md.vlm_client import AsyncOpenRouterClient, AsyncVLLMClient, VLMClient, create_vlm_client
 
@@ -45,10 +47,17 @@ def _extract_mermaid_block(reply: str) -> str | None:
     return None
 
 
+def _ocr_eligible(region: Region) -> bool:
+    """Titles and formulas always go to the VLM: OCR can't produce a Markdown
+    heading or LaTeX, only plain recognized text."""
+    return region.label not in TITLE_LABELS and region.label not in FORMULA_LABELS
+
+
 async def _process_region_async(
     page: PageImage,
     region: Region,
     vlm: AsyncVLLMClient | AsyncOpenRouterClient | VLMClient,
+    ocr: OCREngine | None,
     asset_dir: Path,
     settings: Settings,
     executor: ThreadPoolExecutor,
@@ -75,6 +84,16 @@ async def _process_region_async(
         )
 
     # Bucket.TEXT_LIKE
+    if settings.ocr_fast_path and ocr is not None and _ocr_eligible(region):
+        try:
+            ocr_text = await loop.run_in_executor(executor, ocr.recognize, crop)
+        except Exception:  # noqa: BLE001
+            ocr_text = ""
+        if ocr_text.strip():
+            return RegionResult(region=region, markdown=ocr_text)
+        # Empty/failed OCR result - fall through to the VLM below rather
+        # than returning nothing for this region.
+
     content = await vlm.ask(crop, text_prompt(region.label), bucket=region.bucket)
     return RegionResult(region=region, markdown=content)
 
@@ -83,6 +102,7 @@ async def _process_region_safe_async(
     page: PageImage,
     region: Region,
     vlm: AsyncVLLMClient | AsyncOpenRouterClient | VLMClient,
+    ocr: OCREngine | None,
     asset_dir: Path,
     settings: Settings,
     executor: ThreadPoolExecutor,
@@ -91,12 +111,28 @@ async def _process_region_safe_async(
     server error, etc.) becomes an inline error note instead of aborting the whole document.
     """
     try:
-        return await _process_region_async(page, region, vlm, asset_dir, settings, executor)
+        return await _process_region_async(page, region, vlm, ocr, asset_dir, settings, executor)
     except Exception as exc:  # noqa: BLE001
         return RegionResult(
             region=region,
             markdown=f"> **doc2md: failed to extract this {region.label} region ({exc})**",
         )
+
+
+async def _detect_page_safe(detector, page: PageImage, executor: ThreadPoolExecutor) -> list[Region]:
+    """Runs layout detection for one page; a detection failure is logged and
+    treated as zero regions for that page rather than aborting the whole
+    document. Every built-in engine already catches its own internal
+    failures (doc2md.layout_engines.base.safe_detect) and falls back to a
+    full-page region instead of raising - this is a second layer of defense
+    for anything that still escapes that (e.g. a future custom engine).
+    """
+    loop = asyncio.get_running_loop()
+    try:
+        return await loop.run_in_executor(executor, detector.detect, page)
+    except Exception as exc:  # noqa: BLE001
+        print(f"doc2md: layout detection failed on page {page.page_no}: {exc}", file=sys.stderr)
+        return []
 
 
 def _checkpoint_path(output_dir: Path, source_name: str) -> Path:
@@ -202,16 +238,18 @@ async def convert_document_async(input_path: Path, output_dir: Path, settings: S
     fingerprint = _checkpoint_fingerprint(input_path, settings, len(pages))
 
     vlm = create_vlm_client(settings)
+    ocr = get_ocr_engine(settings) if settings.ocr_fast_path else None
+    executor: ThreadPoolExecutor | None = None
+    pbar: tqdm | None = None
     try:
         await vlm.health_check()
 
         detector = get_layout_engine(settings)
-        loop = asyncio.get_running_loop()
-        executor = ThreadPoolExecutor(max_workers=max(1, settings.vlm_max_concurrency))
-
-        page_regions: dict[int, list[Region]] = {}
-        for page in pages:
-            page_regions[page.page_no] = await loop.run_in_executor(executor, detector.detect, page)
+        # Sized independently of vlm_max_concurrency: this pool does CPU-bound
+        # crop/detect work, not the I/O-bound VLM request fan-out, so it
+        # shouldn't scale past the machine's actual core count.
+        cpu_workers = min(max(1, settings.vlm_max_concurrency), os.cpu_count() or 4)
+        executor = ThreadPoolExecutor(max_workers=cpu_workers)
 
         page_results: dict[int, list[RegionResult]] = (
             _load_checkpoint(checkpoint_path, fingerprint) if settings.resume else {}
@@ -223,8 +261,15 @@ async def convert_document_async(input_path: Path, output_dir: Path, settings: S
                 file=sys.stderr,
             )
         pending_pages = [page for page in pages if page.page_no not in page_results]
+
+        # Only detect layout for pages that still need it - already-checkpointed
+        # pages skip this (potentially GPU-bound) step entirely on resume.
+        page_regions: dict[int, list[Region]] = {}
+        for page in pending_pages:
+            page_regions[page.page_no] = await _detect_page_safe(detector, page, executor)
+
         already_done_regions = sum(len(results) for results in page_results.values())
-        pending_regions = sum(len(page_regions[page.page_no]) for page in pending_pages)
+        pending_regions = sum(len(regions) for regions in page_regions.values())
 
         semaphore = asyncio.Semaphore(max(1, settings.vlm_max_concurrency))
         pbar = tqdm(
@@ -233,33 +278,28 @@ async def convert_document_async(input_path: Path, output_dir: Path, settings: S
             desc="Extracting regions (async vLLM)",
         )
 
-        async def _worker_task(page: PageImage, region: Region) -> tuple[int, int, RegionResult]:
+        async def _worker_task(page: PageImage, region: Region) -> tuple[int, RegionResult]:
             async with semaphore:
-                res = await _process_region_safe_async(page, region, vlm, asset_dir, settings, executor)
+                res = await _process_region_safe_async(page, region, vlm, ocr, asset_dir, settings, executor)
                 pbar.update(1)
-                return page.page_no, region.order_index, res
+                return region.order_index, res
 
-        tasks = []
-        for page in pending_pages:
-            for region in page_regions[page.page_no]:
-                tasks.append(_worker_task(page, region))
+        async def _page_task(page: PageImage) -> tuple[int, list[RegionResult]]:
+            regions = page_regions[page.page_no]
+            raw_results = await asyncio.gather(*[_worker_task(page, region) for region in regions])
+            order_dict = dict(raw_results)
+            return page.page_no, [order_dict[idx] for idx in sorted(order_dict)]
 
-        if tasks:
-            raw_results = await asyncio.gather(*tasks)
-
-            # Group results by page
-            page_region_map: dict[int, dict[int, RegionResult]] = {}
-            for page_no, order_idx, res in raw_results:
-                page_region_map.setdefault(page_no, {})[order_idx] = res
-
-            for page_no, order_dict in page_region_map.items():
-                sorted_results = [order_dict[idx] for idx in sorted(order_dict)]
-                page_results[page_no] = sorted_results
-
+        # All pages' region tasks are scheduled up front and share one
+        # semaphore, so cross-page concurrency is unchanged from a single
+        # flat gather() - but checkpointing after each page completes (via
+        # as_completed, rather than once after everything finishes) means a
+        # crash mid-run only loses whichever pages hadn't finished yet.
+        page_tasks = [asyncio.ensure_future(_page_task(page)) for page in pending_pages]
+        for coro in asyncio.as_completed(page_tasks):
+            page_no, sorted_results = await coro
+            page_results[page_no] = sorted_results
             _save_checkpoint(checkpoint_path, fingerprint, page_results)
-
-        pbar.close()
-        executor.shutdown(wait=False)
 
         markdown = build_markdown(page_results)
         md_path.write_text(markdown, encoding="utf-8")
@@ -272,6 +312,10 @@ async def convert_document_async(input_path: Path, output_dir: Path, settings: S
             page_results=page_results,
         )
     finally:
+        if pbar is not None:
+            pbar.close()
+        if executor is not None:
+            executor.shutdown(wait=False)
         await vlm.close()
 
 

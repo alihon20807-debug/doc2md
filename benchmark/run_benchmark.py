@@ -25,7 +25,7 @@ DEFAULT_LLAMA_CPP_URL = "http://127.0.0.1:8080"
 DEFAULT_VLLM_URL = "http://127.0.0.1:8000"
 DEFAULT_MODEL_NAME = "gemma-4-12B-it-Q4_0.gguf"
 DEFAULT_MODEL_PATH = os.path.join("models", "gemma-4-12B-it-Q4_0.gguf")
-DEFAULT_OUTPUT_PATH = os.path.join("reports", "benchmark_results.json")
+DEFAULT_OUTPUT_PATH = os.path.join("reports", "benchmark_result_latest.json")
 
 # Standard benchmark prompt calibrated for ~128 prompt tokens
 BENCHMARK_PROMPT_128 = (
@@ -271,7 +271,7 @@ def run_mock_benchmark(
     model_name: str = DEFAULT_MODEL_NAME,
     prompt_tokens: int = 128,
     max_tokens: int = 512,
-    simulated_tps: float = 150.1,
+    simulated_tps: float = 100.0,  # arbitrary synthetic value for dry-run testing, not a real measurement
     model_size_bytes: int = DEFAULT_MODEL_SIZE_BYTES,
 ) -> Dict[str, Any]:
     """Generates mock benchmark execution metrics for testing/verification."""
@@ -337,7 +337,7 @@ def run_benchmark(
     model_bytes = get_model_file_size(model_path)
 
     if dry_run:
-        tps = simulated_tps if simulated_tps is not None else 150.1
+        tps = simulated_tps if simulated_tps is not None else 100.0  # arbitrary synthetic default, not a real measurement
         exec_metrics = run_mock_benchmark(
             engine=engine_label,
             model_name=model_name,

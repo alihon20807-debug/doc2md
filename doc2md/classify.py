@@ -90,8 +90,11 @@ DOCLAYOUT_YOLO_LABEL_TO_BUCKET: dict[str, Bucket] = {
     "page_number": Bucket.SKIP,
     "table": Bucket.TABLE,
     "figure": Bucket.PICTURE,
-    "isolate_formula": Bucket.PICTURE,
-    "formula": Bucket.PICTURE,
+    # Formulas go to TEXT_LIKE (-> LaTeX transcription via prompts.FORMULA_LABELS),
+    # matching every other engine - not PICTURE, which would send them through
+    # the diagram/Mermaid decision instead of LaTeX transcription.
+    "isolate_formula": Bucket.TEXT_LIKE,
+    "formula": Bucket.TEXT_LIKE,
     "caption": Bucket.TEXT_LIKE,
     "abandon": Bucket.SKIP,
 }

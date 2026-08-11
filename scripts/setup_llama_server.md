@@ -1,8 +1,18 @@
-# Setting up the local VLM (Gemma 4 12B via llama.cpp)
+# Setting up the local VLM (Gemma 4 12B via llama.cpp) — legacy backend
 
-doc2md talks to a running `llama-server` instance over its OpenAI-compatible
-`/v1/chat/completions` endpoint. This document is how that server was set up on
-this machine (RTX 5080 Laptop GPU, 16 GB VRAM, Blackwell/sm_120).
+> **This document covers the legacy `--vlm-backend llama_server` path.**
+> vLLM (`--vlm-backend vllm`, the default) is doc2md's primary backend now —
+> see CLAUDE.md's "Running vLLM under WSL2" section and
+> `handoffs/vllm_guide_handoff.md` for that setup. Use this doc if you
+> specifically want the llama-server backend (e.g. no WSL2 available, or a
+> simpler single-process local setup); if you follow it, remember to pass
+> `--vlm-backend llama_server --llama-server-url http://127.0.0.1:8080`
+> when running `doc2md` — the default backend/URL point at vLLM instead.
+
+When using this backend, doc2md talks to a running `llama-server` instance
+over its OpenAI-compatible `/v1/chat/completions` endpoint. This document is
+how that server was set up on this machine (RTX 5080 Laptop GPU, 16 GB
+VRAM, Blackwell/sm_120).
 
 ## 1. Get `llama-server`
 

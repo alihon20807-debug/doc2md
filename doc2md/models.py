@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 
 from PIL import Image
 
@@ -24,6 +25,7 @@ class PageImage:
     page_no: int  # 1-indexed
     image: Image.Image
     source_name: str  # stem of the input file, used for asset naming
+    source_path: Path | None = None  # resolved path to the source PDF, if the input was one
 
     @property
     def width(self) -> int:

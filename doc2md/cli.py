@@ -49,11 +49,16 @@ def convert(
         help="Base URL of the running vLLM OpenAI-compatible server.",
     ),
     vllm_model: str = typer.Option(
-        "google/gemma-3-4b-it",
+        "cyankiwi/gemma-4-12B-it-qat-AWQ-INT4",
         "--vllm-model",
-        help="Model name served by vLLM instance (e.g. google/gemma-3-4b-it or gemma-4b).",
+        help="Model name served by vLLM instance (e.g. cyankiwi/gemma-4-12B-it-qat-AWQ-INT4).",
     ),
-    openrouter_api_key: str = typer.Option(
+    llama_server_url: str = typer.Option(
+        "http://127.0.0.1:8080",
+        "--llama-server-url",
+        help="Base URL of the running llama-server instance, used only with --vlm-backend llama_server.",
+    ),
+    openrouter_api_key: str | None = typer.Option(
         None,
         "--openrouter-api-key",
         help="OpenRouter API key. Falls back to the OPENROUTER_API_KEY env var. Required with --vlm-backend openrouter",
@@ -95,13 +100,23 @@ def convert(
             "any existing checkpoint and starts over."
         ),
     ),
+    ocr_fast_path: bool = typer.Option(
+        False,
+        "--ocr-fast-path/--no-ocr-fast-path",
+        help=(
+            "Use the active --layout-engine's own bundled OCR model for plain text regions "
+            "instead of a VLM call (faster, less accurate). Only available for "
+            "'mineru'/'paddleocr'/'docling'; other engines fall back to the VLM regardless. "
+            "Titles and formulas always use the VLM."
+        ),
+    ),
 ) -> None:
     """Convert a document (PDF, PPT, or images) into a Markdown file via local layout + async vLLM."""
     settings = Settings(
         vlm_backend=vlm_backend.value,
         vllm_url=vllm_url,
         vllm_model=vllm_model,
-        llama_server_url=vllm_url,
+        llama_server_url=llama_server_url,
         openrouter_api_key=openrouter_api_key,
         openrouter_text_model=openrouter_text_model,
         openrouter_diagram_model=openrouter_diagram_model,
@@ -110,6 +125,7 @@ def convert(
         render_dpi=dpi,
         layout_engine=layout_engine.value,
         resume=resume,
+        ocr_fast_path=ocr_fast_path,
     )
     result = convert_document(input_path, output_dir, settings)
     md_path = output_dir / f"{Path(result.source_path).stem}.md"

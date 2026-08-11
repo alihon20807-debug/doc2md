@@ -6,6 +6,8 @@ import asyncio
 import base64
 import io
 import os
+import time
+from collections import deque
 from typing import Any
 
 import httpx
@@ -15,9 +17,35 @@ from doc2md.config import Settings
 from doc2md.models import Bucket
 from doc2md.prompts import SYSTEM_PROMPT
 
+_MAX_RETRY_DELAY_S = 30.0
+
 
 class VLMError(RuntimeError):
     pass
+
+
+class _RateLimiter:
+    """Blocks `acquire()` callers so no more than `per_minute` of them start
+    within any trailing 60-second window. `per_minute <= 0` means unlimited.
+    """
+
+    def __init__(self, per_minute: float):
+        self._per_minute = per_minute
+        self._lock = asyncio.Lock()
+        self._starts: deque[float] = deque()
+
+    async def acquire(self) -> None:
+        if self._per_minute <= 0:
+            return
+        async with self._lock:
+            while True:
+                now = time.monotonic()
+                while self._starts and now - self._starts[0] >= 60.0:
+                    self._starts.popleft()
+                if len(self._starts) < self._per_minute:
+                    self._starts.append(now)
+                    return
+                await asyncio.sleep(max(60.0 - (now - self._starts[0]), 0.01))
 
 
 def _encode_image(image: Image.Image) -> str:
@@ -81,7 +109,7 @@ async def _post_chat_completion_async(
         except Exception as exc:  # noqa: BLE001
             last_error = exc
             if attempt < max_retries and _is_transient_error(exc):
-                delay = 1.0 * (2 ** attempt)
+                delay = min(1.0 * (2 ** attempt), _MAX_RETRY_DELAY_S)
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
                     retry_after = exc.response.headers.get("Retry-After")
                     if retry_after:
@@ -144,6 +172,7 @@ class AsyncOpenRouterClient:
             )
         self._api_key = api_key
         self._client = httpx.AsyncClient(timeout=settings.vlm_timeout_s)
+        self._rate_limiter = _RateLimiter(settings.vlm_requests_per_minute)
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -175,13 +204,15 @@ class AsyncOpenRouterClient:
         model = self._model_for_bucket(bucket)
         payload = _build_chat_payload(settings, image, prompt, system_prompt, model=model)
         url = f"{settings.openrouter_base_url.rstrip('/')}/chat/completions"
+        await self._rate_limiter.acquire()
         return await _post_chat_completion_async(
             self._client, url, self._headers(), payload, settings.vlm_timeout_s, settings.vlm_max_retries
         )
 
 
 class VLMClient:
-    """Legacy llama.cpp client (wrapped with async interface)."""
+    """Legacy llama-server client - natively async, same interface shape as
+    AsyncVLLMClient/AsyncOpenRouterClient."""
 
     def __init__(self, settings: Settings):
         self._settings = settings

@@ -8,13 +8,23 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # PP-DocLayoutV2 labels we drop entirely rather than sending to the VLM -
-# running headers/footers/page numbers add noise to a clean markdown document.
+# running header/footer *text* and page numbers add noise to a clean markdown
+# document. header_image/footer_image are deliberately NOT here: they map to
+# Bucket.PICTURE in classify.PP_DOCLAYOUT_LABEL_TO_BUCKET (a logo or figure
+# living in a header/footer band is still worth extracting) - skipping them
+# here would make that mapping entry unreachable.
+#
+# This vocabulary is MinerU/PP-DocLayoutV2's native label spelling. It's
+# passed as-is to every layout engine's bucket_for_label() call, but only
+# meaningfully applies to engines routed through PP_DOCLAYOUT_LABEL_TO_BUCKET
+# (mineru, paddleocr, pymupdf4llm) - docling/markitdown/doclayout_yolo use
+# their own differently-spelled label vocabularies and already bake their own
+# header/footer skip decisions into their own per-engine *_LABEL_TO_BUCKET
+# dicts in classify.py, so this setting is a no-op for those three by design.
 DEFAULT_SKIP_LABELS: frozenset[str] = frozenset(
     {
         "header",
-        "header_image",
         "footer",
-        "footer_image",
         "number",
     }
 )
@@ -33,7 +43,7 @@ class Settings:
 
     # --- vLLM server ---
     vllm_url: str = "http://127.0.0.1:8000"
-    vllm_model: str = "google/gemma-3-4b-it"
+    vllm_model: str = "cyankiwi/gemma-4-12B-it-qat-AWQ-INT4"
 
     # --- llama.cpp server (local Gemma vision model) ---
     llama_server_url: str = "http://127.0.0.1:8080"
@@ -51,11 +61,22 @@ class Settings:
     crop_padding_px: int = 6
 
     # --- layout detection ---
-    layout_engine: str = "mineru"  # "mineru", "docling", "doclayout_yolo", or "markitdown"
+    layout_engine: str = "mineru"  # "mineru", "docling", "doclayout_yolo", "markitdown", "pymupdf4llm", or "paddleocr"
     layout_device: str | None = None  # None -> auto-detect (cuda if available)
     layout_confidence: float = 0.45
     skip_labels: frozenset[str] = field(default_factory=lambda: DEFAULT_SKIP_LABELS)
     docling_weights_dir: Path = field(default_factory=lambda: _REPO_ROOT / "models" / "docling-layout-heron")
+    region_containment_threshold: float = 0.8  # dedup: intersection-over-smaller-area to suppress a duplicate box
+    reading_order_overlap_frac: float = 0.5  # row-bucket heuristic: vertical overlap fraction to join the same row
+
+    # --- OCR fast path (opt-in) ---
+    # Uses the active layout engine's own bundled OCR text-recognition model
+    # (mineru/paddleocr/docling only - see doc2md.ocr_engines) instead of a
+    # VLM call for plain TEXT_LIKE regions. Titles and formulas always go to
+    # the VLM regardless of this setting, since OCR can't produce Markdown
+    # headings or LaTeX. Off by default: the VLM path is the well-verified
+    # one; this trades some accuracy for speed once a user opts in.
+    ocr_fast_path: bool = False
 
     # --- output ---
     assets_dirname_suffix: str = "_assets"

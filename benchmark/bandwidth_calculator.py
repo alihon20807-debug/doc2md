@@ -177,19 +177,23 @@ def get_theoretical_max_bandwidth(config: Union[str, float, int] = "auto") -> fl
 def validate_criteria(
     tokens_per_sec: float,
     efficiency_pct: float,
-    target_tps: float = 150.0,
+    target_tps: float = 124.1,
     target_efficiency_pct: float = 95.0,
 ) -> Dict[str, Any]:
     """Validates whether achieved benchmark metrics meet performance criteria.
 
     Default Criteria:
-        - Decode speed >= 150.0 tokens/sec
+        - Decode speed >= 124.1 tokens/sec (this model/GPU's physical decode
+          ceiling: 896 GB/s bus bandwidth / 7.22 GB model size - see
+          reports/performance_report.md. The previous default of 150.0
+          t/s was never physically reachable on this hardware/model
+          combination and could never pass; see CLAUDE.md.)
         - Memory bandwidth efficiency >= 95.0%
 
     Args:
         tokens_per_sec: Achieved decode tokens per second.
         efficiency_pct: Achieved memory bandwidth efficiency percentage.
-        target_tps: Minimum required tokens/sec (default: 150.0).
+        target_tps: Minimum required tokens/sec (default: 124.1, the measured physical ceiling).
         target_efficiency_pct: Minimum required efficiency percentage (default: 95.0).
 
     Returns:
@@ -252,7 +256,7 @@ class BandwidthCalculator:
         self,
         tokens_per_sec: float,
         efficiency_pct: float,
-        target_tps: float = 150.0,
+        target_tps: float = 124.1,
         target_efficiency_pct: float = 95.0,
     ) -> Dict[str, Any]:
         """Validates performance criteria."""
@@ -264,7 +268,7 @@ class BandwidthCalculator:
         self,
         tokens_per_sec: float,
         model_weight_bytes: Union[int, float],
-        target_tps: float = 150.0,
+        target_tps: float = 124.1,
         target_efficiency_pct: float = 95.0,
     ) -> Dict[str, Any]:
         """Performs full bandwidth evaluation and returns structured results dictionary.
@@ -272,7 +276,7 @@ class BandwidthCalculator:
         Args:
             tokens_per_sec: Decode speed in tokens per second.
             model_weight_bytes: Total model size in bytes.
-            target_tps: Minimum required tokens/sec (default 150.0).
+            target_tps: Minimum required tokens/sec (default 124.1, the measured physical ceiling).
             target_efficiency_pct: Minimum required efficiency percentage (default 95.0%).
 
         Returns:

@@ -28,7 +28,9 @@ def _render_pdf_page(args: tuple[str, int, int, str]) -> PageImage:
         page = doc.load_page(page_index)
         pix = page.get_pixmap(matrix=matrix, colorspace=fitz.csRGB, alpha=False)
         image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-        return PageImage(page_no=page_index + 1, image=image, source_name=source_name)
+        return PageImage(
+            page_no=page_index + 1, image=image, source_name=source_name, source_path=Path(pdf_path_str)
+        )
 
 
 def render_pdf(path: Path, dpi: int) -> list[PageImage]:
@@ -46,7 +48,7 @@ def render_pdf(path: Path, dpi: int) -> list[PageImage]:
             page = doc.load_page(0)
             pix = page.get_pixmap(matrix=matrix, colorspace=fitz.csRGB, alpha=False)
             image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-            return [PageImage(page_no=1, image=image, source_name=path.stem)]
+            return [PageImage(page_no=1, image=image, source_name=path.stem, source_path=path.resolve())]
 
     tasks = [(str(path.resolve()), i, dpi, path.stem) for i in range(page_count)]
     workers = min(page_count, os.cpu_count() or 4)

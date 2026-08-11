@@ -131,14 +131,19 @@ or vLLM/transformers get upgraded, expect these to resurface:
 
 ### Known gaps (vLLM backend, as of this writing)
 
-- **doc2md has never actually been run end-to-end against the live vLLM
-  server** — all verification so far is synthetic load-testing
-  (`scripts/vllm_throughput_test.py`) against real page-region crops and
-  real prompts, not a full `uv run doc2md ...` conversion. This session's
-  consolidation pass fixed several real pipeline/config bugs (see
-  "Consolidation pass" below) and verified them with fakes/mocks standing in
-  for the VLM server, but still never exercised a live vLLM server directly
-  — that gap is unchanged.
+- ~~doc2md has never actually been run end-to-end against the live vLLM
+  server~~ — **closed 2026-08-11**: with the WSL2 vLLM server actually up
+  and serving `cyankiwi/gemma-4-12B-it-qat-AWQ-INT4` (the now-correct
+  default), a real `uv run doc2md sample_docs/test.pdf -o out/` was run for
+  the first time. Output was fully correct: the title became a `#` heading,
+  the table became a real GFM Markdown table with accurate cell values, and
+  the flowchart diagram was correctly redrawn as a ` ```mermaid ` block
+  (not embedded as an image, and no `test_assets/` dir was created, both
+  matching documented behavior exactly). This was a small 1-page synthetic
+  test document (`sample_docs/test.pdf`, 1 region per bucket type) — a
+  real-world multi-page, multi-region-per-page document at scale, and
+  `--concurrency` tuned against the server's real capacity, are both still
+  unverified (see the next two items).
 - The `transformers==5.14.1` pin lives only in the untracked WSL launch
   script — there's no requirements file capturing it, so a fresh WSL
   environment setup would need to rediscover this.

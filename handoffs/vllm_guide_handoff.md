@@ -2,9 +2,12 @@
 
 **Status as of 2026-08-11:** vLLM is running, verified working end-to-end
 (real chat completions confirmed), throughput-tested and tuned to a
-measured, evidence-based setting. **doc2md itself has NOT been run against
-this server yet** — that's the single biggest remaining gap. Read
-"What's NOT done" near the bottom before assuming this is fully wired up.
+measured, evidence-based setting. **doc2md itself has now been run against
+this server too** (a single-page synthetic test document, fully correct
+output — see §8 item 1 and §9). Multi-page/real-world-scale documents and
+non-default layout engines against a live server are still unverified —
+read "What's NOT done" near the bottom before assuming everything is
+covered.
 
 This file is the single source of truth for continuing this work. §10 at the
 bottom is the narrative account of how each bug was found, in order,
@@ -467,14 +470,15 @@ tensor shapes, and public research — not assumptions:
 Roughly in order of how much value they'd add relative to effort, but not
 a strict priority order — pick based on what you actually need next:
 
-1. **Run doc2md against this server for real** (see §9 — this is the
-   biggest remaining gap). `doc2md/cli.py`'s `--vllm-model` default has
-   since been fixed to `cyankiwi/gemma-4-12B-it-qat-AWQ-INT4` (a later
-   consolidation pass), so a plain `uv run doc2md sample_docs/test.pdf -o out/`
-   now points at the right model without extra flags - but running that
-   command and confirming the output actually looks right has still never
-   been done. All throughput testing so far bypassed doc2md's own pipeline
-   entirely.
+1. ~~Run doc2md against this server for real~~ — **done 2026-08-11**: with
+   the server up and `--vllm-model` defaulting correctly, a real
+   `uv run doc2md sample_docs/test.pdf -o out/` produced fully correct
+   output (title → `#` heading, table → real GFM table with accurate
+   values, flowchart → a real ` ```mermaid ` block, no stray asset file).
+   Still not covered: a real-world multi-page document with many regions
+   per page (this test doc has exactly one region per bucket type), and
+   `--concurrency` at scale against the server's real capacity — see the
+   next item.
 2. **Pin `transformers==5.14.1` durably.** There's no requirements file for
    the WSL venv today. Consider: a small `requirements-wsl-vllm.txt` (or
    similar) checked into this repo documenting the exact pinned versions
@@ -532,23 +536,20 @@ a strict priority order — pick based on what you actually need next:
 
 ## 9. What's NOT done — read this before assuming the job is finished
 
-- **doc2md has never actually converted a real document against this
-  server.** Every measurement in §5 talks to `/v1/chat/completions`
-  directly via `scripts/vllm_throughput_test.py`, bypassing
-  `doc2md/pipeline.py`, `doc2md/vlm_client.py`, and the whole layout
-  detection → crop → classify pipeline entirely. The server being fast and
-  correct in isolation doesn't guarantee the full pipeline works end to end
-  — different image sizes per region, the `--layout-engine`'s actual
-  detected regions, `doc2md`'s specific prompt selection per bucket
-  (`text_prompt()` picks title/formula/default prompts differently), and
-  error-handling paths (`_process_region_safe_async`'s failure fallback)
-  are all unexercised.
+- ~~doc2md has never actually converted a real document against this
+  server~~ — **done 2026-08-11**, see §8 item 1. All of §5's throughput
+  measurements still bypass `doc2md/pipeline.py`/`vlm_client.py` directly
+  via `scripts/vllm_throughput_test.py`, but that's now in addition to a
+  confirmed-correct real conversion, not instead of one. Still genuinely
+  unexercised: multi-page documents, many-regions-per-page density, and
+  every layout engine other than the default (`mineru`) against a live
+  server (all 6 engines' *detection* output was verified in the
+  consolidation pass, but only `mineru`'s VLM-transcription path was run
+  against a real server).
 - **`doc2md/cli.py`'s `--vllm-model` default has been fixed** (a later
   consolidation pass changed it from `google/gemma-3-4b-it` to
-  `cyankiwi/gemma-4-12B-it-qat-AWQ-INT4`), but that fix was made without
-  ever running a real end-to-end conversion against the live server - see
-  the item above. The default now being correct doesn't by itself confirm
-  the full pipeline produces good output.
+  `cyankiwi/gemma-4-12B-it-qat-AWQ-INT4`), and is now confirmed correct by
+  the real end-to-end run above.
 - **No output-quality validation was done**, only functional (does it
   respond, does it not crash) and throughput (how fast) testing. See §8.5.
 - **The server is not persistent/supervised.** It will not survive a WSL2

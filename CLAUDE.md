@@ -217,6 +217,84 @@ or vLLM/transformers get upgraded, expect these to resurface:
 - No process supervision/auto-restart exists for the vLLM server — it does
   not survive a WSL2 restart, reboot, or crash.
 
+### "Thinking"/reasoning mode: confirmed off (2026-08-12)
+
+Checked directly against the model's own chat template
+(`chat_template.jinja` in the downloaded checkpoint), not assumed: Gemma 4
+supports an `enable_thinking` flag that, when true, injects a `<|think|>`
+token at the top of the system turn. `doc2md` never sets `enable_thinking`
+in its request payload, so it defaults to false — and the template goes
+further than just "not requesting" thinking: when `enable_thinking` is
+false, the generation prompt explicitly injects an **empty, pre-closed**
+thought channel (`<|channel>thought\n<channel|>`) right before the model
+starts generating, which actively short-circuits any thinking rather than
+merely leaving it unrequested. `doc2md` has always been calling this model
+with thinking off. This also rules out "thinking" as the cause of the
+slow-tail regions investigated below — see the next entry.
+
+### Root cause of the real-document slow-tail regions, and a fix (2026-08-12)
+
+The §"doc2md's own `--concurrency`" entry above found that a handful of
+regions (not the concurrency setting) dominate wall time on a real
+document. Investigated further with temporary per-region/per-attempt timing
+instrumentation (not committed) on the same 508-region PPTX:
+
+- Only 2-3 of ~508 regions actually triggered the degenerate-retry path in
+  `AsyncVLLMClient.ask()` per run — these were the genuine worst offenders
+  (65-78s each) and were mostly `PICTURE`-bucket (diagram/Mermaid) regions.
+- Zero HTTP-level retries occurred (`_post_chat_completion_async`'s
+  transient-error backoff never fired) - ruling out network/5xx flakiness.
+- The bulk of the "slow" regions (30-46s, `TEXT_LIKE` bucket, only
+  ~150-200 tokens of actual output) completed in a **single, clean,
+  non-degenerate attempt** - not a retry, not a loop, not a thinking
+  artifact (see above). This is real request-latency variance under
+  heterogeneous concurrent load (508 regions with varying crop sizes/prompt
+  costs, unlike the uniform single-image throughput benchmark in the table
+  below), which the fix below does not address and nothing in this session
+  root-caused further.
+
+**Fix applied for the part that *is* addressable**: added
+`Settings.vlm_max_tokens_text_like` (default `768`, `config.py`) as a
+tighter cap specifically for `TEXT_LIKE` regions, separate from the
+existing `vlm_max_tokens` (`2048`, kept as-is for `TABLE`/`PICTURE`, which
+can legitimately run long). Wired through `_max_tokens_for_bucket()` in
+`vlm_client.py` at all three backends' `ask()` call sites (the `bucket`
+parameter was already plumbed through everywhere for this purpose, just
+unused before). Rationale: real `TEXT_LIKE` regions rarely need more than
+~150-200 tokens, so a tighter ceiling makes a decoding loop hit the cap (and
+get caught by the existing degenerate-retry check) much sooner instead of
+running most of the way to 2048 tokens first, before this fix ever kicks
+in. **Measured effect** on the same 508-region PPTX at `--concurrency 128`:
+extraction time dropped from 112-116s (pre-fix, three earlier runs) to
+**92s**, total wall time 127-137s → **105s**, with **zero** decoding-loop
+notes and **more** total output (10,785 words vs 9,233 on the pre-fix
+baseline run) - faster and no evidence of legitimate content being cut
+short by the lower cap.
+
+### Prompt architecture: single-pass bucket-routed, not multi-phase (design note, 2026-08-12)
+
+`doc2md` intentionally does **one VLM call per region** with a prompt
+selected by bucket type (`TABLE_PROMPT`/`PICTURE_PROMPT`/`text_prompt()`
+via a lookup in `pipeline.py`'s `_process_region_async`) - not a two-phase
+"describe the image generically, then feed that description into a second
+specialized prompt" pipeline. This was a deliberate design choice, not an
+oversight: a describe-then-transcribe chain adds a second full VLM
+round-trip per region (roughly doubling latency and GPU cost for every
+region, not just the ones that need it) and introduces a second place for
+errors to compound - the second-stage prompt only ever sees the first
+stage's description, not the original image, so any detail the first pass
+missed or mis-described is permanently unavailable to the second pass. The
+current single-pass design instead gives the model the real image and a
+single specialized prompt already tailored to the region's detected type
+(from the layout engine's own classification), which is the cheaper and
+more information-preserving of the two approaches for this bucket-routing
+use case. Not benchmarked against a two-phase alternative in this repo -
+if accuracy on a specific document class is unsatisfactory, a two-phase
+pipeline is a valid thing to try, but it is a real architecture change (new
+prompts, a second `vlm.ask()` call per region, roughly 2x latency/cost) and
+should be scoped as its own piece of work with a concrete accuracy problem
+to solve, not adopted speculatively.
+
 ### Measured throughput (RTX 5080 Laptop, 16GB, `--max-model-len 4096`)
 
 Real doc2md-style request (real page-region crop, actual text-transcription

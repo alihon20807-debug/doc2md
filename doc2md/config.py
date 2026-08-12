@@ -36,7 +36,8 @@ class Settings:
     vlm_backend: str = "vllm"  # "vllm" (local vLLM), "llama_server" (legacy local), or "openrouter" (hosted)
     vlm_temperature: float = 0.1
     vlm_repetition_penalty: float = 1.15  # vLLM-only; guards against decoding-loop repetition on ambiguous crops
-    vlm_max_tokens: int = 2048
+    vlm_max_tokens: int = 2048  # ceiling for TABLE/PICTURE regions - tables and Mermaid diagrams can legitimately run long
+    vlm_max_tokens_text_like: int = 768  # real TEXT_LIKE regions (titles, paragraphs, formulas) rarely need more than ~150-200 tokens; a tighter cap makes a decoding loop hit the ceiling (and get caught by the degenerate-retry check) sooner instead of running most of the way to vlm_max_tokens first
     vlm_timeout_s: float = 180.0
     vlm_max_retries: int = 5
     vlm_max_concurrency: int = 32  # parallel in-flight VLM requests to maximize vLLM continuous batching

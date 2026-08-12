@@ -117,6 +117,19 @@ def _is_transient_error(exc: Exception) -> bool:
     return False
 
 
+def _max_tokens_for_bucket(settings: Settings, bucket: Bucket | None) -> int:
+    """TEXT_LIKE regions get a tighter cap: real titles/paragraphs/formulas
+    rarely need more than ~150-200 tokens, and a lower ceiling makes a
+    decoding loop hit the cap (and get caught by the degenerate-retry check
+    in AsyncVLLMClient.ask()) sooner instead of running most of the way to
+    the full vlm_max_tokens first. TABLE/PICTURE keep the higher default -
+    a real GFM table or a redrawn Mermaid diagram can legitimately run long.
+    """
+    if bucket is Bucket.TEXT_LIKE:
+        return settings.vlm_max_tokens_text_like
+    return settings.vlm_max_tokens
+
+
 def _build_chat_payload(
     settings: Settings,
     image: Image.Image,
@@ -125,6 +138,7 @@ def _build_chat_payload(
     *,
     model: str | None = None,
     repetition_penalty: float | None = None,
+    max_tokens: int | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "messages": [
@@ -138,7 +152,7 @@ def _build_chat_payload(
             },
         ],
         "temperature": settings.vlm_temperature,
-        "max_tokens": settings.vlm_max_tokens,
+        "max_tokens": max_tokens if max_tokens is not None else settings.vlm_max_tokens,
     }
     if repetition_penalty is not None:
         payload["repetition_penalty"] = repetition_penalty
@@ -210,6 +224,7 @@ class AsyncVLLMClient:
         settings = self._settings
         url = f"{self._base_url}/chat/completions"
         repetition_penalty = settings.vlm_repetition_penalty
+        max_tokens = _max_tokens_for_bucket(settings, bucket)
         text = ""
         for attempt in range(_MAX_DEGENERACY_RETRIES + 1):
             payload = _build_chat_payload(
@@ -219,6 +234,7 @@ class AsyncVLLMClient:
                 system_prompt,
                 model=settings.vllm_model,
                 repetition_penalty=repetition_penalty,
+                max_tokens=max_tokens,
             )
             text = await _post_chat_completion_async(
                 self._client, url, {}, payload, settings.vlm_timeout_s, settings.vlm_max_retries
@@ -272,7 +288,9 @@ class AsyncOpenRouterClient:
     ) -> str:
         settings = self._settings
         model = self._model_for_bucket(bucket)
-        payload = _build_chat_payload(settings, image, prompt, system_prompt, model=model)
+        payload = _build_chat_payload(
+            settings, image, prompt, system_prompt, model=model, max_tokens=_max_tokens_for_bucket(settings, bucket)
+        )
         url = f"{settings.openrouter_base_url.rstrip('/')}/chat/completions"
         await self._rate_limiter.acquire()
         return await _post_chat_completion_async(
@@ -305,7 +323,9 @@ class VLMClient:
         self, image: Image.Image, prompt: str, system_prompt: str = SYSTEM_PROMPT, *, bucket: Bucket | None = None
     ) -> str:
         settings = self._settings
-        payload = _build_chat_payload(settings, image, prompt, system_prompt)
+        payload = _build_chat_payload(
+            settings, image, prompt, system_prompt, max_tokens=_max_tokens_for_bucket(settings, bucket)
+        )
         url = f"{settings.llama_server_url.rstrip('/')}/v1/chat/completions"
         return await _post_chat_completion_async(
             self._client, url, {}, payload, settings.vlm_timeout_s, settings.vlm_max_retries

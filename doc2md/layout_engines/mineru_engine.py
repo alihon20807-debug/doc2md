@@ -12,6 +12,7 @@ import os
 from doc2md.classify import PP_DOCLAYOUT_LABEL_TO_BUCKET
 from doc2md.config import Settings
 from doc2md.layout_engines.base import LayoutEngine, make_region, safe_detect
+from doc2md.layout_engines.merge import merge_adjacent_line_regions
 from doc2md.models import PageImage, Region
 
 
@@ -65,6 +66,8 @@ class MinerULayoutEngine(LayoutEngine):
             # predictions are already reading-order-sorted by the model, but the
             # skip filter above can only remove entries, not reorder them.
             regions.sort(key=lambda r: r.order_index)
+            if self._settings.region_merge_enabled:
+                regions = merge_adjacent_line_regions(regions, self._settings)
             return regions
 
         return safe_detect("mineru", page, self._settings, PP_DOCLAYOUT_LABEL_TO_BUCKET, _run)

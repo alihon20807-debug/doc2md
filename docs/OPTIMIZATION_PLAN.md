@@ -70,7 +70,67 @@ thing without re-deriving why it's wrong:
   shipping, the way this investigation did, because a plausible-looking
   wrong filter is worse than no filter.
 
-## Recommended next step: merge same-column adjacent line regions (not yet implemented)
+## Line-region merging: implemented, works, shipped opt-in (not default) - 2026-08-12
+
+Implemented as sketched below (`doc2md/layout_engines/merge.py`,
+`Settings.region_merge_enabled`/`region_merge_max_gap_frac`/
+`region_merge_x_align_px`). Measured on the real 508-region PPTX:
+
+- **Region count: 508 -> 385 (24.2% fewer VLM calls)**, applied uniformly
+  before crop/VLM (wired into `finalize_regions()` for 5 engines, and
+  directly into `mineru_engine.py`, which bypasses `finalize_regions`).
+- **Wall time: 102.5s -> 81.6s** (full pipeline, live server, `--concurrency 128`).
+
+**Not enabled by default, shipped as opt-in (`region_merge_enabled=False`).**
+While verifying content preservation (comparing merge-off vs merge-on
+output word-for-word), a real, previously undocumented bug surfaced that
+made a clean before/after comparison impossible in the time available:
+
+**Newly discovered, pre-existing bug (NOT caused by the merge feature -
+confirmed present in the unmerged baseline too): some slides in this real
+PPTX have overlapping/near-duplicate detected regions that survive
+`suppress_contained_duplicates()` because they overlap without one fully
+containing the other (the dedup check requires ~80% containment). Each
+overlapping region gets its own separate VLM call, and each independently
+re-transcribes the same underlying content with different paraphrasing -
+producing visibly duplicated, reworded bullet points in the output (e.g.
+"Explain why abstraction and layering..." appears 2-4 times with slightly
+different wording). On at least one slide, this also produced a clear
+hallucination: a fabricated "TASK: CONFIDENTIALITY NOTICE" corporate
+boilerplate paragraph that does not appear anywhere in the source
+document - confirmed by rendering the actual slide images directly and
+visually inspecting them.** This is the same "fluent-but-wrong VLM
+response, not repetition-shaped, so not caught by `_looks_degenerate()`"
+residual risk already flagged in `CLAUDE.md`'s decoding-loop-fix entry,
+now with a concrete reproduction. It was present in *both* the merge-off
+and merge-on runs (with different exact wording each time, since VLM
+generation isn't perfectly deterministic even at `temperature=0.1`), which
+is what proved it's unrelated to the merge feature - but it also means the
+word-level diff between merge-off/merge-on output was comparing two
+different flavors of the *same* pre-existing hallucination against each
+other on that slide, contaminating the comparison and leaving genuine
+uncertainty about whether merging is content-safe on the rest of the
+document. Given the time available, the responsible call was to ship the
+merge feature as opt-in rather than assert it's fully safe without a clean
+signal - flip `region_merge_enabled=True` once this overlap/hallucination
+bug is fixed and a clean comparison becomes possible.
+
+**Follow-up needed (not done, this session's time ran out)**:
+1. Fix the overlapping-region dedup gap - likely needs an IoU-based or
+   union-area-based near-duplicate check in addition to the existing
+   containment-based one in `dedup.py`, since these regions overlap
+   substantially without either one containing the other.
+2. Once that's fixed, redo the merge-on/merge-off content comparison
+   cleanly (it should no longer be contaminated by duplicate-region
+   hallucination) and flip `region_merge_enabled` to `True` by default if
+   it comes back clean.
+3. Separately worth deciding: should a hallucination this fluent (a whole
+   fabricated corporate-policy paragraph, not just a repeated token) get
+   any automated detection at all, or is spot-checking real output the
+   only realistic defense? No repetition-based heuristic will catch this
+   shape of error.
+
+## Recommended next step (superseded by the above - kept for history): merge same-column adjacent line regions
 
 The real, safe opportunity this investigation surfaced isn't "drop small
 regions," it's "don't pay a full separate VLM round-trip for every single

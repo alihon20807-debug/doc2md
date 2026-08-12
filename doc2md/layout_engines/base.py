@@ -8,6 +8,7 @@ from typing import Callable
 from doc2md.classify import bucket_for_label
 from doc2md.config import Settings
 from doc2md.layout_engines.dedup import suppress_contained_duplicates
+from doc2md.layout_engines.merge import merge_adjacent_line_regions
 from doc2md.layout_engines.reading_order import assign_reading_order
 from doc2md.models import Bucket, PageImage, Region
 
@@ -55,7 +56,10 @@ def finalize_regions(regions: list[Region], settings: Settings) -> list[Region]:
     deduped = suppress_contained_duplicates(
         regions, containment_threshold=settings.region_containment_threshold
     )
-    return assign_reading_order(deduped, overlap_frac=settings.reading_order_overlap_frac)
+    ordered = assign_reading_order(deduped, overlap_frac=settings.reading_order_overlap_frac)
+    if settings.region_merge_enabled:
+        ordered = merge_adjacent_line_regions(ordered, settings)
+    return ordered
 
 
 def safe_detect(

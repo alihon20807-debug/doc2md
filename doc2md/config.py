@@ -70,6 +70,16 @@ class Settings:
     docling_weights_dir: Path = field(default_factory=lambda: _REPO_ROOT / "models" / "docling-layout-heron")
     region_containment_threshold: float = 0.8  # dedup: intersection-over-smaller-area to suppress a duplicate box
     reading_order_overlap_frac: float = 0.5  # row-bucket heuristic: vertical overlap fraction to join the same row
+    # --- line-region merging ---
+    # Detectors (verified on mineru) often emit one region per visual line
+    # rather than per paragraph; each region pays a full separate VLM
+    # round-trip regardless of how little text it holds. Merging
+    # reading-order-consecutive same-label TEXT_LIKE lines that are stacked
+    # closely together loses no content (unlike a size/confidence filter,
+    # rejected - see docs/OPTIMIZATION_PLAN.md) - see layout_engines/merge.py.
+    region_merge_enabled: bool = False  # opt-in for now - see docs/OPTIMIZATION_PLAN.md "line-region merging" section for why
+    region_merge_max_gap_frac: float = 0.75  # vertical gap tolerance, as a fraction of the preceding line's own height
+    region_merge_x_align_px: int = 20  # horizontal start-alignment tolerance, in pixels at render_dpi
 
     # --- OCR fast path (opt-in) ---
     # Uses the active layout engine's own bundled OCR text-recognition model

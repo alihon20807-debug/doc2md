@@ -88,10 +88,13 @@ or vLLM/transformers get upgraded, expect these to resurface:
   Downgrading transformers is the real fix — this is architecture-level, not
   specific to any one checkpoint or quantization format; it hits any
   `gemma4`/`gemma4_unified` model on vLLM 0.27.x with transformers >=5.15.
-  `scripts/patch_vllm_gemma4_head_dim.py` and
-  `scripts/patch_vllm_heterogeneous_config.py` in this repo are narrower
-  monkeypatches for the same root cause, superseded by the transformers
-  pin — safe to delete next time this area is touched.
+  Two narrower monkeypatches for the same root cause
+  (`scripts/patch_vllm_gemma4_head_dim.py`,
+  `scripts/patch_vllm_heterogeneous_config.py`) predated finding this fix
+  and have since been deleted from the repo — the transformers pin covers
+  everything they covered. The pin itself is recorded in
+  `configs/requirements-wsl-vllm.txt` and referenced from
+  `configs/vllm_launch.sh` and `README.md` so it isn't only prose.
 - **`VLLM_WSL2_ENABLE_PIN_MEMORY=1` is required**, or CUDA pinned/unified
   memory (UVA) is unavailable and the engine fails at device init with
   `RuntimeError: UVA is not available`.
@@ -184,12 +187,33 @@ or vLLM/transformers get upgraded, expect these to resurface:
   produced a short burst of unrelated rambling text before the detector's
   repetition trigger kicked in further down the response and cut the rest);
   there's no general defense against a fluent-but-wrong VLM response.
-- The `transformers==5.14.1` pin lives only in the untracked WSL launch
-  script — there's no requirements file capturing it, so a fresh WSL
-  environment setup would need to rediscover this.
-- doc2md's own `--concurrency` (default 32) has not been tested against the
-  server's real `--max-num-seqs 128` capacity at real-document scale — only
-  the standalone throughput test script has been.
+- ~~The `transformers==5.14.1` pin lives only in the untracked WSL launch
+  script~~ — **closed 2026-08-12**: now recorded in the git-tracked
+  `configs/requirements-wsl-vllm.txt`, referenced from `configs/vllm_launch.sh`
+  and `README.md`, so a fresh WSL environment setup doesn't have to
+  rediscover it from a crash traceback. Nothing installs from it
+  automatically yet — it still needs to be applied manually
+  (`pip install -r configs/requirements-wsl-vllm.txt` in the WSL venv)
+  before the first launch on a rebuilt environment.
+- ~~doc2md's own `--concurrency` (default 32) has not been tested against
+  the server's real `--max-num-seqs 128` capacity at real-document scale~~
+  — **closed 2026-08-12**: the real 508-region PPTX (`test/FALLSEM2026-27_...
+  Module-1.pptx`) was converted three times, once each at
+  `--concurrency 32` (default), `64`, and `128`, against the live tuned
+  server. Wall-clock extraction time: 112s / 116s / 114s respectively — all
+  within noise of each other, no meaningful improvement from raising
+  concurrency above the default. In every run, the last ~8 of 508 regions
+  ("the tail") took ~30+ seconds regardless of concurrency setting,
+  dominating total wall time far more than the concurrency knob did — this
+  points to a small number of individually slow completions (long
+  text/table regions running close to `vlm_max_tokens`, or an occasional
+  decoding-loop retry) as the real bottleneck, not client-side fan-out.
+  32 in-flight requests is already enough to keep the server's continuous
+  batching well-fed at this document's region density; raising
+  `--concurrency` further buys nothing until something addresses the
+  slow-tail regions specifically (e.g. a per-region token budget tighter
+  than the document-wide default, or moving the slowest bucket types to a
+  separate, more patient queue). **Default of 32 is fine as-is.**
 - No process supervision/auto-restart exists for the vLLM server — it does
   not survive a WSL2 restart, reboot, or crash.
 
@@ -205,8 +229,19 @@ concurrent connections until the GPU KV cache genuinely saturates:
 | 8 | 435 | |
 | 32 | 954 | |
 | 64 | 1160 | GPU KV cache usage ~40% — still headroom |
+| 96 | 1216 (peak internal 1494) | GPU KV cache usage ~57% — no queueing, but strictly lower than 128 on every metric measured |
 | 128 | 1258 (peak internal 1511) | GPU KV cache usage ~71% — still no queueing |
 | 192 | 1286 (peak internal 1462) | GPU KV cache hits ~100%, requests start queueing (real cap) — throughput barely improves over 128 while avg latency nearly doubles |
+
+**Re-verified 2026-08-12** with a fresh apples-to-apples rerun of 96 vs 128
+(same script, same 30s window, same real page-region crop and prompt):
+96 → 1216.4 tok/s aggregate / 1494.2 peak internal, GPU KV cache ~57%; 128 →
+1486.8 tok/s aggregate / 1550.3 peak internal, GPU KV cache ~47%, both with
+zero queueing throughout. **128 wins outright** — higher throughput on both
+measures and, in this rerun, even lower KV cache pressure than 96 (run-to-run
+variance in prefix-cache hit rate, not a real inverse relationship) — so
+there is no case for dropping to 96. `--max-num-seqs 128` remains configured
+in `configs/vllm_launch.sh`, unchanged.
 
 **`--max-num-seqs 128` is the sweet spot** and what `launch_vllm.sh` is set
 to: peak throughput with zero queueing. This workload is entirely

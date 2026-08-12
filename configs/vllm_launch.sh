@@ -16,6 +16,11 @@
 # explained in full in handoffs/vllm_guide_handoff.md (sections 2-4); this
 # file is the "what to run," that file is the "why."
 #
+# Before running this on a rebuilt WSL venv, install the pinned versions in
+# configs/requirements-wsl-vllm.txt first (most importantly
+# transformers==5.14.1 - a newer transformers reintroduces
+# AmbiguousGlobalPerLayerAttributeError at startup, see that file for why).
+#
 # This supersedes the previous configs/vllm_launch.ps1 and .sh (deleted in a
 # consolidation pass): those loaded a local GGUF file directly via
 # --load-format gguf, disagreed with each other on --tokenizer, set the

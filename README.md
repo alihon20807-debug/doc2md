@@ -116,6 +116,14 @@ for the full reference (exact launch script, every bug hit and its fix,
 throughput data). The verified launch script is checked in at
 `configs/vllm_launch.sh`.
 
+The WSL2 serving environment (a separate Python install from this repo's own
+`uv`-managed venv) requires **`transformers==5.14.1`, not latest** — newer
+`transformers` reintroduces an `AmbiguousGlobalPerLayerAttributeError` crash
+at server startup on Gemma 4's heterogeneous per-layer config
+(confirmed upstream: https://github.com/vllm-project/vllm/issues/51744).
+This pin (and the verified `vllm==0.27.1`) is recorded in
+`configs/requirements-wsl-vllm.txt`.
+
 ### Alternative: llama-server (legacy)
 
 `--vlm-backend llama_server` talks to a `llama-server` instance instead

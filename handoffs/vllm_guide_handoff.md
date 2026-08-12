@@ -213,15 +213,19 @@ jumps back to whatever's latest and this entire failure mode returns. There
 is no `requirements.txt` for this WSL venv to pin it in. **This is the
 single most likely thing to silently break this setup in the future** —
 see §8 for what to do about it.
-**Narrower monkeypatches that predate finding the real fix** (superseded,
-not needed if the transformers pin holds, kept in the repo in case the pin
-ever needs bypassing again for some reason): `scripts/patch_vllm_gemma4_head_dim.py`
-and `scripts/patch_vllm_heterogeneous_config.py`. Both directly edit the
-installed vLLM source under `/home/aliho/.python312/lib/python3.12/site-packages/vllm/`
-and are idempotent (safe to re-run). **Consider deleting both** next time
-this area is touched — they add confusion about which fix is "the" fix
-without adding safety margin, since the transformers pin already covers
-everything they cover and more.
+**Narrower monkeypatches that predated finding the real fix**
+(`scripts/patch_vllm_gemma4_head_dim.py` and
+`scripts/patch_vllm_heterogeneous_config.py`, which directly edited the
+installed vLLM source under
+`/home/aliho/.python312/lib/python3.12/site-packages/vllm/`) were **already
+deleted from this repo in a later cleanup pass** — the transformers pin
+covers everything they covered and more, so keeping them around only added
+confusion about which fix was "the" fix. If this failure mode ever
+resurfaces on a system where the transformers pin can't be applied for some
+reason, the fix logic itself (setting
+`allow_global_per_layer_attribute_access = True` around the offending
+`getattr`/`hasattr` reads) is preserved in this document's history and in
+git history (`git log -- scripts/patch_vllm_*.py`), not lost.
 
 ### 4.5 `AssertionError: Attempted to load weight (torch.Size([512])) into parameter (torch.Size([256]))`
 **Symptom:** Crash during weight loading (`model.load_weights`), specific
@@ -451,11 +455,10 @@ tensor shapes, and public research — not assumptions:
   risk" note. This is the most likely thing to silently break the whole
   setup later. See §8.
 - **The two now-superseded monkeypatch scripts** (`scripts/patch_vllm_gemma4_head_dim.py`,
-  `scripts/patch_vllm_heterogeneous_config.py`) are still in the repo,
-  unused by the current setup (the transformers pin covers everything they
-  cover). Not deleted this session — low priority, but worth cleaning up
-  next time this area is touched so a future reader doesn't wonder which
-  fix is "the real one."
+  `scripts/patch_vllm_heterogeneous_config.py`) have since been **deleted**
+  from the repo — the transformers pin covers everything they covered, and
+  removing them avoids a future reader wondering which fix is "the real
+  one."
 - **`vllm_serve.log` grows unbounded** with no rotation. Not a problem yet
   at the scale this has been tested, but worth knowing if this server ends
   up staying up for a long time.

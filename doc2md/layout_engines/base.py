@@ -107,8 +107,42 @@ def resolve_source_pdf(page: PageImage) -> Path | None:
     return None
 
 
+def _content_bbox(page: PageImage, padding: int) -> tuple[int, int, int, int]:
+    """Finds the bounding box of actual non-blank ink on the page, padded.
+
+    Falls back to the full page if no content is found (a genuinely blank
+    page) or if the detected content already spans nearly the whole page.
+    Used by `full_page_fallback_region()` so a page with a small cluster of
+    real text on an otherwise blank canvas doesn't get sent to the VLM as
+    one giant mostly-empty crop - a real, confirmed cause of VLM
+    hallucination (see docs/OPTIMIZATION_PLAN.md's "pre-existing
+    hallucination bug" entry: a 2666x1500 page whose only real content was a
+    228x188px cluster of text, ~5% of the page area, produced a fabricated
+    "CONFIDENTIALITY NOTICE" paragraph with no basis in the source).
+    """
+    from PIL import ImageOps
+
+    gray = page.image.convert("L")
+    inverted = ImageOps.invert(gray)
+    thresholded = inverted.point(lambda p: 255 if p > 20 else 0)
+    bbox = thresholded.getbbox()
+    if bbox is None:
+        return (0, 0, page.width, page.height)
+    x0, y0, x1, y1 = bbox
+    if (x1 - x0) * (y1 - y0) >= 0.9 * page.width * page.height:
+        return (0, 0, page.width, page.height)
+    return (
+        max(0, x0 - padding),
+        max(0, y0 - padding),
+        min(page.width, x1 + padding),
+        min(page.height, y1 + padding),
+    )
+
+
 def full_page_fallback_region(page: PageImage, settings: Settings, label_map: dict[str, Bucket], label: str = "text") -> list[Region]:
-    """Synthesizes one full-page region, used when an engine detects nothing."""
+    """Synthesizes one region covering the page's actual content, used when
+    an engine detects nothing - tightened to the real content bounding box
+    rather than always the literal full page (see `_content_bbox()`)."""
     bucket = bucket_for_label(label, label_map, settings.skip_labels)
     if bucket is Bucket.SKIP:
         return []
@@ -117,7 +151,7 @@ def full_page_fallback_region(page: PageImage, settings: Settings, label_map: di
             page_no=page.page_no,
             label=label,
             bucket=bucket,
-            bbox=(0, 0, page.width, page.height),
+            bbox=_content_bbox(page, settings.crop_padding_px),
             score=1.0,
             order_index=0,
         )

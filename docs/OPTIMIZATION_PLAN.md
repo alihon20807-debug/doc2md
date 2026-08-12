@@ -115,20 +115,75 @@ merge feature as opt-in rather than assert it's fully safe without a clean
 signal - flip `region_merge_enabled=True` once this overlap/hallucination
 bug is fixed and a clean comparison becomes possible.
 
-**Follow-up needed (not done, this session's time ran out)**:
-1. Fix the overlapping-region dedup gap - likely needs an IoU-based or
-   union-area-based near-duplicate check in addition to the existing
-   containment-based one in `dedup.py`, since these regions overlap
-   substantially without either one containing the other.
-2. Once that's fixed, redo the merge-on/merge-off content comparison
-   cleanly (it should no longer be contaminated by duplicate-region
-   hallucination) and flip `region_merge_enabled` to `True` by default if
-   it comes back clean.
-3. Separately worth deciding: should a hallucination this fluent (a whole
-   fabricated corporate-policy paragraph, not just a repeated token) get
-   any automated detection at all, or is spot-checking real output the
-   only realistic defense? No repetition-based heuristic will catch this
-   shape of error.
+## Root cause found and fixed: full-page-fallback hallucination (2026-08-12, follow-up)
+
+The "CONFIDENTIALITY NOTICE" hallucination above was root-caused by testing
+every text region on pages 1-10 individually against the live VLM and
+checking which one's output contained "confidential" - found in one call:
+`page=4 bbox=(0, 0, 2666, 1500) score=1.00`. That bbox and score signature
+means MinerU detected **zero** real regions on page 4, triggering
+`full_page_fallback_region()`'s synthesized full-page region - and page 4's
+real content turned out to be a small ~228x188px cluster of tiny text in
+the top-left corner of an otherwise blank 2666x1500 canvas (confirmed by
+rendering the page directly). The VLM, given a giant mostly-blank image
+with the real content reduced to a barely-legible sliver after whatever
+downscaling its vision preprocessing applies, fabricated plausible generic
+corporate-document boilerplate instead of saying it couldn't read
+anything - the same "fluent-but-wrong, not repetition-shaped" residual risk
+`CLAUDE.md`'s decoding-loop-fix entry already named, now with a concrete
+reproduction.
+
+**Scope check**: this is not a one-off. `MinerULayoutEngine` returns zero
+regions (triggering the full-page fallback) on **15 of 98 pages (15.3%)**
+of this real PPTX, and every one of them has the same signature - a small
+content cluster on an otherwise blank page (this presentation's template
+consistently places title/duration/page-number-style content in the
+top-left corner with a lot of surrounding whitespace). That's a
+much bigger blast radius than "one bad slide."
+
+**Fix**: `layout_engines/base.py`'s new `_content_bbox()` finds the actual
+non-blank ink on the page (grayscale -> invert -> threshold -> PIL
+`getbbox()`) and `full_page_fallback_region()` now uses that (padded by
+`crop_padding_px`) instead of always the literal full page - falling back
+to the full page only if no content is found (genuinely blank) or the
+content already spans ~90%+ of the page (no point tightening further).
+Verified across all 15 fallback pages: bboxes shrank to 0.2%-10.3% of the
+page area, all starting near the same top-left corner, consistent with the
+template. Lowering `layout_confidence` globally was tried first and
+rejected - it's not a clean fix (tested 0.45/0.3/0.2/0.1/0.05 on page 4:
+inconsistent, non-monotonic region counts, and 0.05 introduced spurious
+junk detections) - the content-bbox approach doesn't touch detection
+confidence at all, so it has no such fragility.
+
+**Verified end-to-end**: full 508-region PPTX conversion after the fix -
+zero "CONFIDENTIAL" mentions anywhere in the output (down from at least
+one confirmed hallucination before), zero decoding-loop notes, wall time
+unchanged (~92s, this fix doesn't touch region count, only fallback bbox
+sizing).
+
+## Region merging, re-evaluated after the fallback fix
+
+Re-ran the merge-on/merge-off content comparison now that the
+fallback-hallucination bug (the actual contaminating factor before) is
+fixed. Clean this time in the sense that **zero hallucination** appeared in
+either run - but a new, real signal appeared instead: merge-on produced
+**~17-19% fewer total words** than merge-off (8544 vs 10267 on one run),
+with the "missing" words skewing toward real content terms (`protocol`,
+`layer`, `message`, `application`), not just filler. Interpretation: this
+is a VLM *transcription* pipeline, not literal OCR - text_prompt() asks the
+model not to summarize, but a denser multi-line merged crop appears to give
+it more room to paraphrase/condense than a single, unambiguous one-line
+crop does. Some "extra" words also appeared (`rightarrow`, `square`,
+diagram-syntax-looking tokens - Mermaid/SVG leakage on a picture-adjacent
+region), a smaller but separate signal worth a future look.
+
+**Decision: `region_merge_enabled` stays `False` by default.** Not because
+of hallucination risk (that's resolved and was never actually caused by
+merging - see above), but because there's now direct evidence of a real,
+if modest, transcription-completeness tradeoff that a user should opt into
+knowingly, not get by default. The speed win is real and unchanged (508 ->
+385 regions, ~100s -> ~81s wall time) for anyone who decides the
+completeness tradeoff is acceptable for their use case.
 
 ## Recommended next step (superseded by the above - kept for history): merge same-column adjacent line regions
 

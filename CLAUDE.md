@@ -143,7 +143,47 @@ or vLLM/transformers get upgraded, expect these to resurface:
   test document (`sample_docs/test.pdf`, 1 region per bucket type) — a
   real-world multi-page, multi-region-per-page document at scale, and
   `--concurrency` tuned against the server's real capacity, are both still
-  unverified (see the next two items).
+  unverified (see the next two items). **Partially closed 2026-08-12**: a
+  real 97-slide PPTX (`test/FALLSEM2026-27_VL_BACSE203_00100_ETH_2026-08-04_
+  Module-1.pptx`, 445 regions) and a real multi-page PDF from the same
+  course were run end-to-end. The PDF came out fully clean. The PPTX
+  surfaced a real bug — see "VLM decoding-loop garbage" below — now fixed;
+  `--concurrency` at real-document scale is still unverified.
+- **VLM decoding-loop garbage on real multi-page documents (found & fixed
+  2026-08-12)**: converting the real PPTX above showed that on ambiguous or
+  visually cluttered crops (a near-blank "section divider" slide that
+  mineru's layout detector couldn't find any regions on and fell back to a
+  synthesized full-page crop for; a slide with a hard-to-parse ASCII-art
+  flowchart), `cyankiwi/gemma-4-12B-it-qat-AWQ-INT4` at `doc2md`'s
+  near-greedy `vlm_temperature=0.1` would fall into a decoding loop —
+  repeating the same short line or token hundreds of times — instead of
+  terminating normally. This reproduced identically across repeated full
+  reruns (not sampling noise), and the raw looping text was silently
+  written straight into the output markdown with no detection at all,
+  corrupting roughly a third of that document's `.md` file across at least
+  4 separate regions. Fixed in two layers in `doc2md/vlm_client.py`: (1) a
+  new `Settings.vlm_repetition_penalty` (default `1.15`, `config.py`),
+  forwarded to vLLM's `/v1/chat/completions` as an extra `repetition_penalty`
+  field (vLLM-specific — deliberately *not* added for the `llama_server` or
+  `openrouter` backends' payloads, which don't share this exact field
+  semantics) — this alone only shrank the problem, it didn't eliminate it,
+  since a stronger penalty just moved the loop to a different token/region
+  on retry; so (2) `AsyncVLLMClient.ask()` now detects a degenerate response
+  after the fact (`_looks_degenerate()`: N+ consecutive identical short
+  lines, or a short substring repeated 15+ times back-to-back within one
+  line), retries up to twice with the repetition penalty escalated each
+  time, and if it's still degenerate after all retries, truncates the
+  response at the point the loop started and appends a visible
+  `> **doc2md: VLM response looked like a decoding loop and was truncated
+  after N retries.**` note (`_truncate_degenerate()`) — matching the
+  existing `> **doc2md: failed to extract...**` convention for partial
+  region failures in `pipeline.py`, instead of silently keeping garbage or
+  aborting the region. Residual risk: this only catches *repetition*-shaped
+  degeneracy, not content hallucination that doesn't repeat (observed once
+  during testing — the same hard flowchart slide, after exhausting retries,
+  produced a short burst of unrelated rambling text before the detector's
+  repetition trigger kicked in further down the response and cut the rest);
+  there's no general defense against a fluent-but-wrong VLM response.
 - The `transformers==5.14.1` pin lives only in the untracked WSL launch
   script — there's no requirements file capturing it, so a fresh WSL
   environment setup would need to rediscover this.

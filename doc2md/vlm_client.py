@@ -6,6 +6,7 @@ import asyncio
 import base64
 import io
 import os
+import re
 import time
 from collections import deque
 from typing import Any
@@ -18,6 +19,11 @@ from doc2md.models import Bucket
 from doc2md.prompts import SYSTEM_PROMPT
 
 _MAX_RETRY_DELAY_S = 30.0
+_DEGENERATE_LINE_RUN = 8  # consecutive identical non-blank lines
+_DEGENERATE_INLINE_REPEATS = 15  # a short substring repeated back-to-back within one line
+_MAX_DEGENERACY_RETRIES = 2
+_DEGENERACY_PENALTY_STEP = 0.2
+_DEGENERACY_PENALTY_CAP = 1.8
 
 
 class VLMError(RuntimeError):
@@ -48,6 +54,53 @@ class _RateLimiter:
                 await asyncio.sleep(max(60.0 - (now - self._starts[0]), 0.01))
 
 
+def _looks_degenerate(text: str) -> bool:
+    """True if `text` looks like a decoding-loop response - the same short
+    line, or the same short inline token, repeated far more times in a row
+    than any real document content would ever need. Small quantized VLMs can
+    fall into this loop on ambiguous/blank crops instead of terminating."""
+    lines = text.splitlines()
+    run = 1
+    for i in range(1, len(lines)):
+        if lines[i] == lines[i - 1] and lines[i].strip():
+            run += 1
+            if run >= _DEGENERATE_LINE_RUN and len(lines[i].strip()) < 80:
+                return True
+        else:
+            run = 1
+    if re.search(r"(.{1,6}?)\1{" + str(_DEGENERATE_INLINE_REPEATS) + r",}", text):
+        return True
+    return False
+
+
+_INLINE_REPEAT_RE = re.compile(r"(.{1,6}?)\1{" + str(_DEGENERATE_INLINE_REPEATS) + r",}")
+
+
+def _truncate_degenerate(text: str, retries: int) -> str:
+    """Cut a decoding-loop response down to whatever real content preceded
+    the loop, and leave a visible note instead of silently keeping the
+    runaway repetition."""
+    lines = text.splitlines()
+    cutoff = len(lines)
+    run = 1
+    for i in range(1, len(lines)):
+        if lines[i] == lines[i - 1] and lines[i].strip():
+            run += 1
+            if run >= _DEGENERATE_LINE_RUN and len(lines[i].strip()) < 80:
+                cutoff = i - run + 1
+                break
+        else:
+            run = 1
+    lines = lines[:cutoff]
+    for i, line in enumerate(lines):
+        if _INLINE_REPEAT_RE.search(line):
+            lines = lines[:i]
+            break
+    kept = "\n".join(lines).rstrip()
+    note = f"> **doc2md: VLM response looked like a decoding loop and was truncated after {retries} retries.**"
+    return f"{kept}\n\n{note}" if kept else note
+
+
 def _encode_image(image: Image.Image) -> str:
     buf = io.BytesIO()
     image.save(buf, format="PNG")
@@ -71,6 +124,7 @@ def _build_chat_payload(
     system_prompt: str,
     *,
     model: str | None = None,
+    repetition_penalty: float | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "messages": [
@@ -86,6 +140,8 @@ def _build_chat_payload(
         "temperature": settings.vlm_temperature,
         "max_tokens": settings.vlm_max_tokens,
     }
+    if repetition_penalty is not None:
+        payload["repetition_penalty"] = repetition_penalty
     if model is not None:
         payload = {"model": model, **payload}
     return payload
@@ -152,11 +208,25 @@ class AsyncVLLMClient:
         self, image: Image.Image, prompt: str, system_prompt: str = SYSTEM_PROMPT, *, bucket: Bucket | None = None
     ) -> str:
         settings = self._settings
-        payload = _build_chat_payload(settings, image, prompt, system_prompt, model=settings.vllm_model)
         url = f"{self._base_url}/chat/completions"
-        return await _post_chat_completion_async(
-            self._client, url, {}, payload, settings.vlm_timeout_s, settings.vlm_max_retries
-        )
+        repetition_penalty = settings.vlm_repetition_penalty
+        text = ""
+        for attempt in range(_MAX_DEGENERACY_RETRIES + 1):
+            payload = _build_chat_payload(
+                settings,
+                image,
+                prompt,
+                system_prompt,
+                model=settings.vllm_model,
+                repetition_penalty=repetition_penalty,
+            )
+            text = await _post_chat_completion_async(
+                self._client, url, {}, payload, settings.vlm_timeout_s, settings.vlm_max_retries
+            )
+            if not _looks_degenerate(text):
+                return text
+            repetition_penalty = min(repetition_penalty + _DEGENERACY_PENALTY_STEP, _DEGENERACY_PENALTY_CAP)
+        return _truncate_degenerate(text, _MAX_DEGENERACY_RETRIES)
 
 
 class AsyncOpenRouterClient:

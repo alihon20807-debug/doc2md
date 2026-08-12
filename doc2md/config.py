@@ -35,6 +35,7 @@ class Settings:
     # --- VLM backend ---
     vlm_backend: str = "vllm"  # "vllm" (local vLLM), "llama_server" (legacy local), or "openrouter" (hosted)
     vlm_temperature: float = 0.1
+    vlm_repetition_penalty: float = 1.15  # vLLM-only; guards against decoding-loop repetition on ambiguous crops
     vlm_max_tokens: int = 2048
     vlm_timeout_s: float = 180.0
     vlm_max_retries: int = 5
